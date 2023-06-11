@@ -1,10 +1,13 @@
 import codecs
 import glob
 import os
-from pathlib import Path
+import re
 
+import polib
+from pathlib import Path
 from django.core.management.base import BaseCommand, CommandError
 from django.core.management.utils import find_command, is_ignored_path, popen_wrapper
+import deep_translator
 
 
 def has_bom(fn):
@@ -36,6 +39,21 @@ class Command(BaseCommand):
 
     def add_arguments(self, parser):
         parser.add_argument(
+            "args",
+            metavar="app_label",
+            nargs="*",
+            help="Specify the app label(s) to create migrations for.",
+        )
+        parser.add_argument(
+            "--source-lang",
+            "-s",
+            action="store",
+            default="en",
+            dest="source_lang",
+            metavar="LANG",
+            help="What language is used for msgid in .po files",
+        )
+        parser.add_argument(
             "--locale",
             "-l",
             action="append",
@@ -61,13 +79,14 @@ class Command(BaseCommand):
             "Use multiple times to ignore more.",
         )
 
-    def handle(self, **options):
+    def handle(self, *app_labels, **options):
+        self.options = options
+        self.source_lang = options["source_lang"]
+        app_labels = set(app_labels)
         locale = options["locale"]
         exclude = options["exclude"]
         ignore_patterns = set(options["ignore_patterns"])
         self.verbosity = options["verbosity"]
-        if options["fuzzy"]:
-            self.program_options = self.program_options + ["-f"]
 
         if find_command(self.program) is None:
             raise CommandError(
@@ -101,6 +120,56 @@ class Command(BaseCommand):
                 "the settings module specified."
             )
 
+        translatemessages_params = getattr(settings, "TRANSLATEMESSAGES_PARAMS", None)
+        if not translatemessages_params:
+            raise CommandError(
+                "Please, define a TRANSLATEMESSAGES_PARAMS in your settings.py"
+                " (See django-translatemessages documentation)"
+            )
+        if "translator" not in translatemessages_params:
+            raise CommandError(
+                "Not a valid TRANSLATEMESSAGES_PARAMS : translator is missing"
+                " (See django-translatemessages documentation)"
+            )
+
+        # Get translator
+        self.translator_cls = getattr(
+            deep_translator,
+            settings.TRANSLATEMESSAGES_PARAMS["translator"]["class"],
+            None,
+        )
+
+        if not self.translator_cls:
+            translators = ", ".join(
+                cls for cls in deep_translator.__all__ if cls.endswith("Translator")
+            )
+            raise CommandError(
+                f"Not a valid TRANSLATEMESSAGES_PARAMS : bad translator class.\n"
+                f"Possible values are: "
+                f"{translators}"
+            )
+
+        # Get translator params
+        self.translator_params = settings.TRANSLATEMESSAGES_PARAMS["translator"].get(
+            "params", {}
+        )
+
+        # Get other parameters from settings
+        self.do_batch = settings.TRANSLATEMESSAGES_PARAMS.get("batch", False)
+        extract_regex = settings.TRANSLATEMESSAGES_PARAMS.get("extract_regex")
+        if isinstance(extract_regex, str):
+            extract_regex = re.compile(extract_regex)
+        if extract_regex:
+
+            def filter_msgid(msgid):
+                m = extract_regex.match(msgid)
+                if m:
+                    return m.group(1)
+
+            self.filter_msgid = filter_msgid
+        else:
+            self.filter_msgid = lambda msgid: msgid
+
         # Build locale list
         all_locales = []
         for basedir in basedirs:
@@ -126,11 +195,72 @@ class Command(BaseCommand):
                         (dirpath, f) for f in filenames if f.endswith(".po")
                     )
             if locations:
-                self.compile_messages(locations)
+                self.translate_messages(locations)
 
         if self.has_errors:
             raise CommandError("compilemessages generated one or more errors.")
 
-    def compile_messages(self, locations):
-        # TODO
-        pass
+    def translate_messages(self, locations):
+        for location in locations:
+            path = Path(os.sep.join(location))
+            self.translate_pofile(path)
+
+    def translate_pofile(self, path):
+        target_lang = path.parent.parent.name
+        po = polib.pofile(path)
+        self.stdout.write(
+            self.style.WARNING(
+                f"Translating {path} ({self.source_lang} -> {target_lang}) ..."
+            )
+        )
+        translator_params = dict(
+            self.translator_params,
+            source=self.source_lang,
+            target=target_lang,
+        )
+        translator = self.translator_cls(**translator_params)
+        if self.do_batch:
+            entries = [
+                entry
+                for entry in po
+                if not entry.translated() and self.filter_msgid(entry.msgid)
+            ]
+
+            texts = [entry.msgid for entry in entries]
+            translated_texts = self.translate_text_batch(texts, translator)
+            for entry, translated_text in zip(entries, translated_texts):
+                entry.msgstr = translated_text
+                self.stdout.write(
+                    self.style.SUCCESS(f"{entry.msgid} -> {translated_text}")
+                )
+        else:
+            for entry in po:
+                if not entry.translated():
+                    filtered_msgid = self.filter_msgid(entry.msgid)
+                    if filtered_msgid:
+                        if translator.source != translator.target:
+                            translated_text = self.translate_text(
+                                filtered_msgid, translator
+                            )
+                        else:
+                            translated_text = filtered_msgid
+                        entry.msgstr = translated_text
+                        self.stdout.write(
+                            self.style.SUCCESS(f"{entry.msgid} -> {translated_text}")
+                        )
+
+        po.save()
+
+    def translate_text(self, text, translator):
+        translated_text = translator.translate(text)
+        return translated_text
+
+    def translate_text_batch(self, texts, translator):
+        translated_texts = []
+        if texts:
+            filtered_texts = [self.filter_msgid(t) for t in texts]
+            if translator.source != translator.target:
+                translated_texts = translator.translate_batch(filtered_texts)
+            else:
+                translated_texts = filtered_texts
+        return translated_texts

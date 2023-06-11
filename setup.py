@@ -24,7 +24,7 @@ long_description = """
 News
 ----
 
-%(CHANGES)s
+%(CHANGELOG)s
 """ % read(
     "README", "CHANGELOG"
 )
