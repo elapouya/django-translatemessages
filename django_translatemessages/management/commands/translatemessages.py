@@ -6,6 +6,7 @@ import re
 import polib
 from pathlib import Path
 from django.core.management.base import BaseCommand, CommandError
+from django.utils.termcolors import colorize
 from django.core.management.utils import find_command, is_ignored_path, popen_wrapper
 import deep_translator
 
@@ -45,13 +46,28 @@ class Command(BaseCommand):
             help="Specify the app label(s) to create migrations for.",
         )
         parser.add_argument(
-            "--source-lang",
-            "-s",
-            action="store",
-            default="en",
-            dest="source_lang",
-            metavar="LANG",
-            help="What language is used for msgid in .po files",
+            "--dry-run",
+            "-n",
+            action="store_true",
+            help="Do not write .po file",
+        )
+        parser.add_argument(
+            "--no-trans",
+            "-t",
+            action="store_true",
+            help="Do not translate",
+        )
+        parser.add_argument(
+            "--no-filter",
+            "-f",
+            action="store_true",
+            help="Do not use extract_regex",
+        )
+        parser.add_argument(
+            "--all",
+            "-a",
+            action="store_true",
+            help="Translate everything, even already translated strings",
         )
         parser.add_argument(
             "--locale",
@@ -81,8 +97,7 @@ class Command(BaseCommand):
 
     def handle(self, *app_labels, **options):
         self.options = options
-        self.source_lang = options["source_lang"]
-        app_labels = set(app_labels)
+        walkdirs = set(app_labels) or ["."]
         locale = options["locale"]
         exclude = options["exclude"]
         ignore_patterns = set(options["ignore_patterns"])
@@ -101,24 +116,23 @@ class Command(BaseCommand):
             basedirs.extend(settings.LOCALE_PATHS)
 
         # Walk entire tree, looking for locale directories
-        for dirpath, dirnames, filenames in os.walk(".", topdown=True):
-            for dirname in dirnames:
-                if is_ignored_path(
-                    os.path.normpath(os.path.join(dirpath, dirname)), ignore_patterns
-                ):
-                    dirnames.remove(dirname)
-                elif dirname == "locale":
-                    basedirs.append(os.path.join(dirpath, dirname))
+        for walkdir in walkdirs:
+            for dirpath, dirnames, filenames in os.walk(walkdir, topdown=True):
+                for dirname in dirnames:
+                    if is_ignored_path(
+                        os.path.normpath(os.path.join(dirpath, dirname)),
+                        ignore_patterns,
+                    ):
+                        dirnames.remove(dirname)
+                    elif dirname == "locale":
+                        basedirs.append(os.path.join(dirpath, dirname))
 
         # Gather existing directories.
         basedirs = set(map(os.path.abspath, filter(os.path.isdir, basedirs)))
 
         if not basedirs:
-            raise CommandError(
-                "This script should be run from the Django Git "
-                "checkout or your project or app tree, or with "
-                "the settings module specified."
-            )
+            self.stdout.write(self.style.WARNING("No django.po to translate"))
+            exit(1)
 
         translatemessages_params = getattr(settings, "TRANSLATEMESSAGES_PARAMS", None)
         if not translatemessages_params:
@@ -156,10 +170,12 @@ class Command(BaseCommand):
 
         # Get other parameters from settings
         self.do_batch = settings.TRANSLATEMESSAGES_PARAMS.get("batch", False)
+        self.source_lang = settings.TRANSLATEMESSAGES_PARAMS.get("source_lang", "en")
+
         extract_regex = settings.TRANSLATEMESSAGES_PARAMS.get("extract_regex")
         if isinstance(extract_regex, str):
             extract_regex = re.compile(extract_regex)
-        if extract_regex:
+        if extract_regex and not options["no_filter"]:
 
             def filter_msgid(msgid):
                 m = extract_regex.match(msgid)
@@ -207,12 +223,25 @@ class Command(BaseCommand):
 
     def translate_pofile(self, path):
         target_lang = path.parent.parent.name
+        nb_translations = 0
         po = polib.pofile(path)
-        self.stdout.write(
-            self.style.WARNING(
-                f"Translating {path} ({self.source_lang} -> {target_lang}) ..."
+        if self.options["no_trans"]:
+            self.stdout.write(
+                colorize(
+                    f"*** NOT Translating *** {path} ({self.source_lang} "
+                    f"-> {target_lang}) ...",
+                    fg="black",
+                    bg="red",
+                )
             )
-        )
+        else:
+            self.stdout.write(
+                colorize(
+                    f"Translating {path} ({self.source_lang} " f"-> {target_lang}) ...",
+                    fg="black",
+                    bg="yellow",
+                )
+            )
         translator_params = dict(
             self.translator_params,
             source=self.source_lang,
@@ -223,21 +252,31 @@ class Command(BaseCommand):
             entries = [
                 entry
                 for entry in po
-                if not entry.translated() and self.filter_msgid(entry.msgid)
+                if (
+                    (not entry.translated() or self.options["all"])
+                    and self.filter_msgid(entry.msgid)
+                )
             ]
-
+            nb_translations += len(entries)
             texts = [entry.msgid for entry in entries]
             translated_texts = self.translate_text_batch(texts, translator)
             for entry, translated_text in zip(entries, translated_texts):
                 entry.msgstr = translated_text
                 self.stdout.write(
-                    self.style.SUCCESS(f"{entry.msgid} -> {translated_text}")
+                    colorize(f"{entry.msgid}", fg="blue"),
+                    ending="",
                 )
+                self.stdout.write(colorize(f"-> {translated_text}", fg="cyan"))
         else:
             for entry in po:
-                if not entry.translated():
+                if not entry.translated() or self.options["all"]:
                     filtered_msgid = self.filter_msgid(entry.msgid)
                     if filtered_msgid:
+                        nb_translations += 1
+                        self.stdout.write(
+                            colorize(f"{entry.msgid}", fg="blue"),
+                            ending="",
+                        )
                         if translator.source != translator.target:
                             translated_text = self.translate_text(
                                 filtered_msgid, translator
@@ -245,22 +284,38 @@ class Command(BaseCommand):
                         else:
                             translated_text = filtered_msgid
                         entry.msgstr = translated_text
-                        self.stdout.write(
-                            self.style.SUCCESS(f"{entry.msgid} -> {translated_text}")
-                        )
+                        self.stdout.write(colorize(f"-> {translated_text}", fg="cyan"))
 
-        po.save()
+        if nb_translations:
+            self.stdout.write(
+                self.style.SUCCESS(f"{nb_translations} strings translated")
+            )
+            if self.options["dry_run"]:
+                self.stdout.write(
+                    self.style.WARNING("django.po not modified (DRY-RUN)")
+                )
+            else:
+                self.stdout.write(self.style.SUCCESS("django.po modified"))
+                po.save()
+        else:
+            self.stdout.write(self.style.WARNING("Nothing to translate"))
 
     def translate_text(self, text, translator):
-        translated_text = translator.translate(text)
+        if self.options["no_trans"]:
+            translated_text = text
+        else:
+            translated_text = translator.translate(text)
         return translated_text
 
     def translate_text_batch(self, texts, translator):
-        translated_texts = []
-        if texts:
-            filtered_texts = [self.filter_msgid(t) for t in texts]
-            if translator.source != translator.target:
-                translated_texts = translator.translate_batch(filtered_texts)
-            else:
-                translated_texts = filtered_texts
+        if self.options["no_trans"]:
+            translated_texts = texts
+        else:
+            translated_texts = []
+            if texts:
+                filtered_texts = [self.filter_msgid(t) for t in texts]
+                if translator.source != translator.target:
+                    translated_texts = translator.translate_batch(filtered_texts)
+                else:
+                    translated_texts = filtered_texts
         return translated_texts
