@@ -171,6 +171,7 @@ class Command(BaseCommand):
         # Get other parameters from settings
         self.do_batch = settings.TRANSLATEMESSAGES_PARAMS.get("batch", False)
         self.source_lang = settings.TRANSLATEMESSAGES_PARAMS.get("source_lang", "en")
+        self.auto_fuzzy = settings.TRANSLATEMESSAGES_PARAMS.get("auto_fuzzy", True)
 
         extract_regex = settings.TRANSLATEMESSAGES_PARAMS.get("extract_regex")
         if isinstance(extract_regex, str):
@@ -262,6 +263,8 @@ class Command(BaseCommand):
             translated_texts = self.translate_text_batch(texts, translator)
             for entry, translated_text in zip(entries, translated_texts):
                 entry.msgstr = translated_text
+                if self.auto_fuzzy:
+                    entry.flags.append("fuzzy")
                 self.stdout.write(
                     colorize(f"{entry.msgid}", fg="blue"),
                     ending="",
@@ -284,6 +287,8 @@ class Command(BaseCommand):
                         else:
                             translated_text = filtered_msgid
                         entry.msgstr = translated_text
+                        if self.auto_fuzzy:
+                            entry.flags.append("fuzzy")
                         self.stdout.write(colorize(f"-> {translated_text}", fg="cyan"))
 
         if nb_translations:
