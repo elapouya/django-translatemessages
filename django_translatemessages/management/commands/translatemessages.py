@@ -215,7 +215,7 @@ class Command(BaseCommand):
                 self.translate_messages(locations)
 
         if self.has_errors:
-            raise CommandError("compilemessages generated one or more errors.")
+            raise CommandError("translatemessages generated one or more errors.")
 
     def translate_messages(self, locations):
         for location in locations:
@@ -272,7 +272,9 @@ class Command(BaseCommand):
                 self.stdout.write(colorize(f"-> {translated_text}", fg="cyan"))
         else:
             for entry in po:
-                if not entry.translated() or self.options["all"]:
+                if (
+                    not entry.translated() and "fuzzy" not in entry.flags
+                ) or self.options["all"]:
                     filtered_msgid = self.filter_msgid(entry.msgid)
                     if filtered_msgid:
                         nb_translations += 1

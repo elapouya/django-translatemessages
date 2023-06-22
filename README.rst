@@ -23,7 +23,7 @@ Configuration
 
 You must declare in your ``settings.py`` what translator to use and its params.
 Please refer to `deep-translator Translators <https://deep-translator.readthedocs.io/en/latest/usage.html>`_
-to know what parameters to specify (Note that ``django-translatemessages`` automatically add ``source`` and ``target`` parameters
+to know what parameters to specify (Note that ``django-translatemessages`` automatically add ``source`` and ``target`` parameters)
 
 To configure GoogleTranslator, add in your ``settings.py``::
 
@@ -71,8 +71,9 @@ The source language is ``en`` by default, but you can use another one in your ``
     }
 
 **IMPORTANT :** By default, ``django-translatemessages`` will produce translations with the flag ``fuzzy``.
-This force the developer to validate manually each translation. To do so, edit each ``django.po`` file,
-search for the line ``#, fuzzy`` and remove it if you agree with the proposed translation. If you do not do this,
+This force the developer to validate manually each translation.
+
+To do so, edit each ``django.po`` file, search for the line ``#, fuzzy`` and remove it if you agree with the proposed translation. If you do not do this,
 Django will not display the translation. You can also use `poedit <https://poedit.net/>`_
 and press ``CTRL + RETURN`` on each highlighted translation you agree.
 
