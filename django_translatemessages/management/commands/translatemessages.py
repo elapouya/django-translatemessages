@@ -254,7 +254,14 @@ class Command(BaseCommand):
                 entry
                 for entry in po
                 if (
-                    (not entry.translated() or self.options["all"])
+                    (
+                        (
+                            not entry.translated()
+                            and not entry.obsolete
+                            and "translatemessages" not in entry.comment
+                        )
+                        or self.options["all"]
+                    )
                     and self.filter_msgid(entry.msgid)
                 )
             ]
@@ -263,8 +270,11 @@ class Command(BaseCommand):
             translated_texts = self.translate_text_batch(texts, translator)
             for entry, translated_text in zip(entries, translated_texts):
                 entry.msgstr = translated_text
+                if "translatemessages" not in entry.comment:
+                    entry.comment += "-> Translated with django-translatemessages"
                 if self.auto_fuzzy:
-                    entry.flags.append("fuzzy")
+                    if "fuzzy" not in entry.flags:
+                        entry.flags.append("fuzzy")
                 self.stdout.write(
                     colorize(f"{entry.msgid}", fg="blue"),
                     ending="",
@@ -273,7 +283,9 @@ class Command(BaseCommand):
         else:
             for entry in po:
                 if (
-                    not entry.translated() and "fuzzy" not in entry.flags
+                    not entry.obsolete
+                    and "translatemessages" not in entry.comment
+                    and not entry.translated()
                 ) or self.options["all"]:
                     filtered_msgid = self.filter_msgid(entry.msgid)
                     if filtered_msgid:
@@ -289,8 +301,13 @@ class Command(BaseCommand):
                         else:
                             translated_text = filtered_msgid
                         entry.msgstr = translated_text
+                        if "translatemessages" not in entry.comment:
+                            entry.comment += (
+                                "-> Translated with django-translatemessages"
+                            )
                         if self.auto_fuzzy:
-                            entry.flags.append("fuzzy")
+                            if "fuzzy" not in entry.flags:
+                                entry.flags.append("fuzzy")
                         self.stdout.write(colorize(f"-> {translated_text}", fg="cyan"))
 
         if nb_translations:
